@@ -1,0 +1,94 @@
+version: '3.9'
+
+services:
+
+  # ── PostgreSQL Database ────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: fmanager_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fmanager_db
+      POSTGRES_USER: ${DB_USERNAME:-fmanager_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro   # optional init scripts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-fmanager_user} -d fmanager_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fmanager_net
+
+  # ── pgAdmin (optional — DB management UI) ─────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: fmanager_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@corp.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'       # single-user desktop mode
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fmanager_net
+
+  # ── Spring Boot Application ────────────────────────────────────────────────
+  fmanager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fmanager_app
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/fmanager_db
+      DB_USERNAME: ${DB_USERNAME:-fmanager_user}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      FILE_MANAGER_BASE_PATH: /data/filemanager
+      SPRING_PROFILES_ACTIVE: prod
+      LOG_PATH: /var/log/fmanager
+    ports:
+      - "8080:8080"
+    volumes:
+      - filemanager_data:/data/filemanager   # persistent file storage
+      - fmanager_logs:/var/log/fmanager      # persistent logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fmanager_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# ── Named Volumes ──────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  filemanager_data:
+    driver: local
+  fmanager_logs:
+    driver: local
+
+# ── Network ────────────────────────────────────────────────────────────────
+networks:
+  fmanager_net:
+    driver: bridge
